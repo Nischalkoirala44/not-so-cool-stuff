@@ -1,35 +1,45 @@
 import { type NextRequest, NextResponse } from "next/server";
-import path from "path";
-import { mkdirSync, existsSync } from "fs";
-import { writeFile } from "fs/promises";
+import { Writable } from "stream";
 import clientPromise from "@/lib/mongodb";
+import cloudinary from "@/lib/cloudinary";
+
+interface CloudinaryUploadResult {
+  secure_url: string;
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const uploadDir = path.join(process.cwd(), "public/uploads");
-    if (!existsSync(uploadDir)) {
-      mkdirSync(uploadDir, { recursive: true });
-    }
-
     const formData = await request.formData();
-    const file = formData.get("file") as File;
-    const caption = formData.get("caption") as string;
-    const type = formData.get("type") as string;
+    const file = formData.get("file") as File | null;
+    const caption = formData.get("caption") as string | null;
+    const type = formData.get("type") as string | null;
 
     if (!file || !caption || !type) {
       return NextResponse.json({ message: "Missing file, caption, or type" }, { status: 400 });
     }
 
-    const timestamp = Date.now();
-    const originalName = file.name;
-    const fileName = `${timestamp}-${originalName.replace(/[^a-zA-Z0-9.-]/g, "_")}`;
-    const buffer = Buffer.from(await file.arrayBuffer());
+    // Convert file to Buffer
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
 
-    const filePath = path.join(uploadDir, fileName);
-    await writeFile(filePath, buffer);
+    // Upload to Cloudinary with typed Promise
+    const uploadResult = await new Promise<CloudinaryUploadResult>((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: "blog_uploads",
+          resource_type: type === "video" ? "video" : "image",
+        },
+        (error, result) => {
+          if (error || !result) return reject(error || new Error("No result from Cloudinary"));
+          resolve(result as CloudinaryUploadResult);
+        }
+      );
+
+      (uploadStream as Writable).end(buffer);
+    });
 
     const newEntry = {
-      file: `uploads/${fileName}`,
+      file: uploadResult.secure_url,
       caption,
       type,
       date: new Date().toISOString().split("T")[0],
@@ -43,7 +53,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ message: "Upload successful", file: newEntry });
   } catch (error) {
-    console.error("Upload failed:", error);
+    console.error("Cloudinary upload failed:", error);
     return NextResponse.json({ message: "Server error", error: `${error}` }, { status: 500 });
   }
 }
@@ -62,3 +72,4 @@ export async function GET() {
     return NextResponse.json({ message: "Failed to fetch", error: `${error}` }, { status: 500 });
   }
 }
+
